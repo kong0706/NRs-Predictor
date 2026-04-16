@@ -1,0 +1,86 @@
+{
+    "binder_none_GT": {
+        "hidden_channels": 128,
+        "num_layers": 4,
+        "dropout": 0.2,
+        "lr": 0.001,
+        "weight_decay": 1e-05,
+        "gamma": 1,
+        "pos_weight": 1.253246794399008,
+        "batch_size": 128,
+        "n_heads": 4
+    },
+    "binder_none_GIN": {
+        "hidden_channels": 128,
+        "num_layers": 2,
+        "dropout": 0.5,
+        "lr": 0.001,
+        "weight_decay": 0.0001,
+        "gamma": 0.995,
+        "pos_weight": 1.0774249925712565,
+        "batch_size": 64
+    },
+    "binder_none_GCN": {
+        "hidden_channels": 32,
+        "num_layers": 4,
+        "dropout": 0.2,
+        "lr": 0.01,
+        "weight_decay": 0.0001,
+        "gamma": 0.995,
+        "pos_weight": 1.3988925261872691,
+        "batch_size": 128
+    },
+    "binder_none_AFP": {
+        "hidden_channels": 16,
+        "num_layers": 2,
+        "dropout": 0.2,
+        "lr": 0.01,
+        "weight_decay": 1e-05,
+        "gamma": 1,
+        "pos_weight": 1.8832407786093872,
+        "batch_size": 128,
+        "num_timesteps": 3
+    },
+    "agonist_none_GT": {
+        "hidden_channels": 32,
+        "num_layers": 1,
+        "dropout": 0.2,
+        "lr": 0.01,
+        "weight_decay": 1e-05,
+        "gamma": 1,
+        "pos_weight": 1.4319450186421157,
+        "batch_size": 64,
+        "n_heads": 2
+    },
+    "agonist_none_GIN": {
+        "hidden_channels": 32,
+        "num_layers": 1,
+        "dropout": 0.2,
+        "lr": 0.01,
+        "weight_decay": 1e-05,
+        "gamma": 1,
+        "pos_weight": 1.4319450186421157,
+        "batch_size": 64
+    },
+    "agonist_none_GCN": {
+        "hidden_channels": 32,
+        "num_layers": 1,
+        "dropout": 0.2,
+        "lr": 0.01,
+        "weight_decay": 0.0001,
+        "gamma": 1,
+        "pos_weight": 1.886855199030971,
+        "batch_size": 64
+    },
+    "agonist_none_AFP": {
+        "hidden_channels": 16,
+        "num_layers": 1,
+        "dropout": 0.5,
+        "lr": 0.01,
+        "weight_decay": 1e-05,
+        "gamma": 0.995,
+        "pos_weight": 1.5421287003864963,
+        "batch_size": 128,
+        "num_timesteps": 4
+    }
+}

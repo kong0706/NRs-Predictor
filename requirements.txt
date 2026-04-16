@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+rdkit
+joblib
+torch
+torch-geometric
+deepchem
+streamlit-ketcher
+scikit-learn
+xgboost
+lightgbm
