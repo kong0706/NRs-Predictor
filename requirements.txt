@@ -3,7 +3,7 @@ imbalanced-learn
 lightgbm
 numpy
 optuna
-pytorch
+torch
 rdkit
 scikit-learn
 torch-geometric
