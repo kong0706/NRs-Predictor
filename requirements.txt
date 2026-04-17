@@ -4,7 +4,6 @@ lightgbm
 numpy
 optuna
 pytorch
-pytorch-cuda
 rdkit
 scikit-learn
 torch-geometric
