@@ -1,4 +1,6 @@
 import streamlit as st
+st.set_page_config(page_title="NURA Activity Predictor", layout="wide")
+
 import pandas as pd
 import numpy as np
 import os
@@ -14,6 +16,8 @@ import deepchem as dc
 from streamlit_ketcher import st_ketcher
 from torch_geometric.loader import DataLoader
 from clean import choose_standardize
+from sklearn.model_selection import train_test_split
+from rdkit.DataStructs import ExplicitBitVect, BulkTanimotoSimilarity
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 from utils import mol_to_graph_data_obj_simple
@@ -94,7 +98,19 @@ SINGLE_MODEL_CONFIG = {
     ("ERA", "binder"): "xgb+descriptors.joblib"
 }
 
+# AD缓存
+AD_CACHE = {}
+
+@st.cache_data
+def load_threshold():
+    """加载每个训练集计算得到的的95%百分位数阈值"""
+    df = pd.read_csv("train_similarity_threshold.csv")
+    return {(row['receptor'], row['train_type']): row['p95_similarity'] for _, row in df.iterrows()}
+
+threshold_dict = load_threshold()
+
 def calculate_features(smiles_list, tag):
+    """计算配体的分子特征"""
     tag = tag.lower()
     mols = [Chem.MolFromSmiles(s) for s in smiles_list]
     if "descriptors" in tag or "descriptor" in tag:
@@ -111,6 +127,7 @@ def calculate_features(smiles_list, tag):
     return None
     
 def clean_smiles_list(smiles_list):
+    """标准化分子SMILES"""
     cleaned = []
     for s in smiles_list:
         try:
@@ -144,6 +161,7 @@ def load_dl_model_dynamic(model_name, target, mode):
     return model.to(device).eval()
 
 def run_prediction(target, mode, smiles_list):
+    """运行预测"""
     all_probs = []
     smiles_list = clean_smiles_list(smiles_list)
     
@@ -188,13 +206,97 @@ def run_prediction(target, mode, smiles_list):
 
     preds = (final_probs >= 0.5).astype(int)
     return preds, final_probs
+    
+def split_none(df):
+    """划分数据"""
+    X = df.iloc[:, 1:-1]
+    y = df.iloc[:, -1]
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X, y, test_size=0.2, random_state=6, stratify=y
+    )
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp, y_temp, test_size=0.5, random_state=6, stratify=y_temp
+    )
+    return X_train, X_val, X_test
+
+def array_to_fp(row):
+    """将0/1数组转为RDKit指纹"""
+    bv = ExplicitBitVect(len(row))
+    for i, b in enumerate(row):
+        if int(b) == 1:
+            bv.SetBit(i)
+    return bv
+
+def smiles_to_fp(smiles_list):
+    """SMILES转Morgan指纹"""
+    fps = []
+    valid_idx = []
+    for i, smi in enumerate(smiles_list):
+        mol = Chem.MolFromSmiles(smi)
+        if mol:
+            fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2048)
+            fps.append(fp)
+            valid_idx.append(i)
+    return fps, valid_idx
+
+def calculate_ad(test_fps, train_fps, threshold, k=5):
+    """基于top-k平均相似度的AD判定"""
+    results = {}
+    for idx, fp in enumerate(test_fps):
+        sims = BulkTanimotoSimilarity(fp, train_fps)
+        sims = np.array(sims)
+        top_k = np.partition(sims, -k)[-k:]
+        avg_sim = np.mean(top_k)
+        results[idx] = 'Inside AD' if avg_sim >= threshold else 'Outside AD'
+    return results
+
+def load_train_fps(receptor, train_type):
+    """加载训练集分子指纹"""
+    key = (receptor, train_type)
+
+    if key in AD_CACHE:
+        return AD_CACHE[key]
+
+    path = os.path.join("datasets", receptor, train_type, "morgan", "morgan.csv")
+    df = pd.read_csv(path)
+
+    X_train, _, _ = split_none(df)
+    fps = [array_to_fp(row.values) for _, row in X_train.iterrows()]
+
+    AD_CACHE[key] = fps
+    return fps
+
+def run_ad(smiles_list, receptor, mode):
+    """计算AD"""
+    train_type = f"{mode}_train"
+    threshold = threshold_dict.get((receptor, train_type))
+
+    if threshold is None:
+        return ["-"] * len(smiles_list)
+
+    test_fps, valid_idx = smiles_to_fp(smiles_list)
+    train_fps = load_train_fps(receptor, train_type)
+    ad_raw = calculate_ad(test_fps, train_fps, threshold)
+    idx_map = {orig: i for i, orig in enumerate(valid_idx)}
+
+    results = []
+    for i in range(len(smiles_list)):
+        if i in idx_map:
+            results.append(ad_raw[idx_map[i]])
+        else:
+            results.append("Invalid SMILES")
+
+    return results
 
 #Streamlit
 def main():
-    st.set_page_config(page_title="NURA Activity Predictor", layout="wide")
     st.title("Nuclear Receptor Activity Prediction Platform")
     st.image("Schematic diagram.png", caption="Schematic Diagram", use_column_width=True)
     
+    # 所有任务
+    ALL_TASKS = list(set(list(SINGLE_MODEL_CONFIG.keys()) + ENSEMBLE_TASKS))
+    ALL_TASKS = sorted(ALL_TASKS)
+
     # 侧边栏
     st.sidebar.header("Target Configuration")
     all_targets = sorted(list(set([k[0] for k in SINGLE_MODEL_CONFIG.keys()] + [k[0] for k in ENSEMBLE_TASKS])))
@@ -215,31 +317,91 @@ def main():
         if drawn:
             st.write(f"Generated SMILES: {drawn}")
             smiles_list = [drawn]
+
     elif input_type == "SMILES String":
         s_input = st.text_input("Enter SMILES")
-        if s_input: smiles_list = [s_input.strip()]
+        if s_input:
+            smiles_list = [s_input.strip()]
+
     else:
         file = st.file_uploader("Upload CSV", type=["csv"])
         if file:
             df = pd.read_csv(file)
-            if "SMILES" in df.columns: smiles_list = df["SMILES"].dropna().tolist()
+            if "SMILES" in df.columns:
+                smiles_list = df["SMILES"].dropna().tolist()
 
-    if st.button("Start Calculation") and smiles_list:
+    # 按钮
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
+
+    with btn_col2:
+        start_single = st.button("Start Calculation", use_container_width=True)
+        start_all = st.button("Run All Targets", use_container_width=True)
+
+    # 单任务预测
+    if start_single and smiles_list:
         with st.spinner("Calculating..."):
             preds, probs = run_prediction(selected_target, selected_mode, smiles_list)
-            
+            ad_results = run_ad(smiles_list, selected_target, selected_mode)
+
             if preds is not None:
                 st.subheader("Results Table")
                 res_df = pd.DataFrame({
                     "SMILES": smiles_list,
                     "Probability": [f"{p:.4f}" for p in probs],
-                    "Outcome": ["Active" if p == 1 else "Inactive" for p in preds]
+                    "Outcome": ["Active" if p == 1 else "Inactive" for p in preds],
+                    "Applicability Domain": ad_results
                 })
                 st.table(res_df)
-                
+
                 if len(smiles_list) == 1:
                     mol = Chem.MolFromSmiles(smiles_list[0])
-                    if mol: st.image(Draw.MolToImage(mol, size=(300, 300)))
+                    if mol:
+                        st.image(Draw.MolToImage(mol, size=(300, 300)))
+
+    # 全部任务预测
+    if start_all and smiles_list:
+        st.warning("Running all targets may take several minutes.")
+
+        with st.spinner("Running all targets..."):
+            all_results = []
+            progress = st.progress(0)
+            total = len(ALL_TASKS)
+
+            for i, (target, mode) in enumerate(ALL_TASKS):
+                try:
+                    preds, probs = run_prediction(target, mode, smiles_list)
+                    ad_results = run_ad(smiles_list, target, mode)
+                    if preds is None:
+                        continue
+
+                    for j, smi in enumerate(smiles_list):
+                        all_results.append({
+                            "SMILES": smi,
+                            "Target": target,
+                            "Mode": mode,
+                            "Probability": probs[j],
+                            "Outcome": "Active" if preds[j] == 1 else "Inactive",
+                            "Applicability Domain": ad_results[j]
+                        })
+
+                    # 清理GPU缓存
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                except Exception as e:
+                    st.warning(f"{target}-{mode} failed: {e}")
+
+                progress.progress((i + 1) / total)
+
+            res_df = pd.DataFrame(all_results)
+
+            # 原始结果
+            st.subheader("All Predictions")
+            st.dataframe(res_df)
+
+            # 下载
+            csv = res_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Results", csv, "all_predictions.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
