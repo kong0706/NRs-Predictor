@@ -15,7 +15,6 @@ from rdkit.Chem import Descriptors, AllChem, MACCSkeys, Draw
 import deepchem as dc
 from streamlit_ketcher import st_ketcher
 from torch_geometric.loader import DataLoader
-from clean import choose_standardize
 from sklearn.model_selection import train_test_split
 from rdkit.DataStructs import ExplicitBitVect, BulkTanimotoSimilarity
 
@@ -128,16 +127,15 @@ def calculate_features(smiles_list, tag):
     
 def clean_smiles_list(smiles_list):
     """标准化分子SMILES"""
-    cleaned = []
+    new_list = []
     for s in smiles_list:
-        try:
-            cs = choose_standardize(s)
-            if cs is None:
-                cs = s
-            cleaned.append(cs)
-        except:
-            cleaned.append(s)
-    return cleaned
+        mol = Chem.MolFromSmiles(s)
+        if mol:
+            s2 = Chem.MolToSmiles(mol, isomericSmiles=False)
+            new_list.append(s2)
+        else:
+            new_list.append(s)
+    return new_list
 
 def load_dl_model_dynamic(model_name, target, mode):
     """加载受体对应的超参数和权重"""
