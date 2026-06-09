@@ -7,106 +7,217 @@ import os
 import json
 import torch
 import warnings
-import io
 import sys
 from joblib import load
 from rdkit import Chem
 from rdkit.Chem import Descriptors, AllChem, MACCSkeys, Draw
+from rdkit.DataStructs import ExplicitBitVect, BulkTanimotoSimilarity
+from sklearn.model_selection import train_test_split
+
 import deepchem as dc
 from streamlit_ketcher import st_ketcher
 from torch_geometric.loader import DataLoader
-from sklearn.model_selection import train_test_split
-from rdkit.DataStructs import ExplicitBitVect, BulkTanimotoSimilarity
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 from utils import mol_to_graph_data_obj_simple
-from model import GINModel, GCNModel, GraphTransformerModel
+from model import GINModel, GCNModel, GraphTransformerModel, GATModel
 from torch_geometric.nn.models import AttentiveFP
 
 warnings.filterwarnings("ignore")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-BASE_PATH = "./NURA_ml"
+
+# PATH CONFIGURATION
 PRETRAIN_MOL2VEC_PATH = './model_300dim.pkl'
 HYPERPARAMS_DIR = './best_hyperparameters'
-DL_WEIGHTS_BASE = './graph_models'
 
-ENSEMBLE_TASKS = [
-    ("PPARG", "antagonist"),
-    ("FXR", "antagonist"),
-    ("ERB", "antagonist"),
-    ("ERA", "antagonist"),
-    ("RXR", "agonist"),
-    ("ERB", "agonist")
-]
+# Consensus stacking paths (from Consensus_Model_stacking_auto.py)
+ML_BASELINE_BASE = './NURA_Baseline_ml'
+GNN_BASELINE_BASE = './NURA_Baseline_gnn'
+CONSENSUS_BASE = './NURA_consensus'
 
-ENSEMBLE_SUBMODELS = {
-    ("PPARG", "antagonist"): {
-        "ml": [("ros", "xgb+rdk.joblib"), ("ros", "SVM+maccs.joblib"), ("ros", "xgb+descriptors.joblib"),
-               ("rus", "SVM+maccs.joblib"), ("rus", "lgb+descriptors.joblib"), ("rus", "xgb+maccs.joblib")],
-        "dl": ["GIN", "AFP", "GCN"]
-    },
-    ("FXR", "antagonist"): {
-        "ml": [("ros", "lgb+descriptors.joblib"), ("ros", "lgb+rdk.joblib"), ("ros", "lgb+mol2vec.joblib"),
-               ("ros", "SVM+rdk.joblib"), ("ros", "RF+rdk.joblib"), ("ros", "lgb+maccs.joblib")],
-        "dl": ["GT", "AFP","GCN"]
-    },
-    ("ERB", "antagonist"): {
-        "ml": [("ros", "lgb+descriptors.joblib"), ("ros", "SVM+morgan.joblib"), ("ros", "xgb+descriptors.joblib"),
-               ("ros", "SVM+maccs.joblib"), ("ros", "lgb+morgan.joblib"), ("ros", "xgb+morgan.joblib")],
-        "dl": ["GIN", "AFP","GCN"]
-    },
-    ("ERA", "antagonist"): {
-        "ml": [("ros", "xgb+descriptors.joblib"), ("ros", "lgb+descriptors.joblib"), ("ros", "lgb+mol2vec.joblib"),
-               ("ros", "xgb+mol2vec.joblib"), ("ros", "lgb+morgan.joblib"), ("ros", "xgb+maccs.joblib")],
-        "dl": ["GT", "AFP","GCN"]
-    },
-    ("RXR", "agonist"): {
-        "ml": [("ros", "RF+descriptors.joblib"), ("ros", "RF+rdk.joblib"), ("ros", "lgb+mol2vec.joblib"),
-               ("rus", "SVM+morgan.joblib"), ("ros", "RF+mol2vec.joblib"), ("rus", "lgb+descriptors.joblib")],
-        "dl": ["GT", "AFP", "GCN"]
-    },
-    ("ERB", "agonist"): {
-        "ml": [("ros", "lgb+mol2vec.joblib"), ("ros", "SVM+mol2vec.joblib"), ("ros", "xgb+mol2vec.joblib"),
-               ("ros", "SVM+morgan.joblib"), ("ros", "lgb+rdk.joblib"), ("ros", "lgb+morgan.joblib")],
-        "dl": ["GT", "AFP","GIN"]
-    }
+ML_TOP_K = 5     # Number of top ML models to select
+GNN_TOP_K = 2    # Number of top GNN models to select
+NUM_REPLICATES = 5  # Total replicates from Consensus_Model_stacking_auto.py
+
+
+# GNN MODEL CLASS MAP
+GNN_CLASS_MAP = {
+    "GT": GraphTransformerModel,
+    "GIN": GINModel,
+    "GCN": GCNModel,
+    "GAT": GATModel,
+    "AFP": AttentiveFP
 }
 
-SINGLE_MODEL_CONFIG = {
-    ("PPARG", "agonist"): "SVM+rdk.joblib",
-    ("PPARG", "binder"): "xgb+descriptors.joblib",
-    ("FXR", "agonist"): "lgb+rdk.joblib",
-    ("FXR", "binder"): "SVM+morgan.joblib",
-    ("PXR", "agonist"): "lgb+descriptors.joblib",
-    ("PXR", "binder"): "RF+maccs.joblib",
-    ("GR", "agonist"): "lgb+descriptors.joblib",
-    ("GR", "binder"): "SVM+maccs.joblib",
-    ("GR", "antagonist"): "SVM+rdk.joblib",
-    ("RXR", "binder"): "lgb+descriptors.joblib",
-    ("ERB", "binder"): "SVM+rdk.joblib",
-    ("AR", "agonist"): "SVM+mol2vec.joblib",
-    ("AR", "binder"): "lgb+morgan.joblib",
-    ("AR", "antagonist"): "lgb+descriptors.joblib",
-    ("PPARD", "agonist"): "lgb+morgan.joblib",
-    ("PPARD", "binder"): "SVM+rdk.joblib",
-    ("PR", "agonist"): "RF+rdk.joblib",
-    ("PR", "binder"): "lgb+morgan.joblib",
-    ("PR", "antagonist"): "lgb+descriptors.joblib",
-    ("ERA", "agonist"): "RF+descriptors.joblib",
-    ("ERA", "binder"): "xgb+descriptors.joblib"
+
+# CONSENSUS TASK CONFIGURATION
+# Derived from Consensus_Model_stacking_auto.py CONFIGS
+# (target, mode) -> (ml_sampling, gnn_sampling)
+CONSENSUS_CONFIGS = {
+    # --- Binders (ml_sampling='none', gnn_sampling='none') ---
+    ('FXR', 'binder'): ('none', 'none'),
+    ('PPARD', 'binder'): ('none', 'none'),
+    ('RXR', 'binder'): ('none', 'none'),
+    ('ERB', 'binder'): ('none', 'none'),
+    ('PR', 'binder'): ('none', 'none'),
+    ('AR', 'binder'): ('none', 'none'),
+    ('ERA', 'binder'): ('none', 'none'),
+    ('PXR', 'binder'): ('none', 'none'),
+    ('PPARG', 'binder'): ('none', 'none'),
+    ('GR', 'binder'): ('none', 'none'),
+
+    # --- Antagonists (ml_sampling='none', gnn_sampling='none') ---
+    ('ERA', 'antagonist'): ('none', 'none'),
+    ('GR', 'antagonist'): ('none', 'none'),
+    ('AR', 'antagonist'): ('none', 'none'),
+    ('PR', 'antagonist'): ('none', 'none'),
+
+    # --- Antagonists (ml_sampling='rus', gnn_sampling='ros') ---
+    ('PPARG', 'antagonist'): ('rus', 'ros'),
+    ('FXR', 'antagonist'): ('rus', 'ros'),
+    ('ERB', 'antagonist'): ('rus', 'ros'),
+
+    # --- Agonists (ml_sampling='none', gnn_sampling='none') ---
+    ('AR', 'agonist'): ('none', 'none'),
+    ('PPARD', 'agonist'): ('none', 'none'),
+    ('GR', 'agonist'): ('none', 'none'),
+    ('ERA', 'agonist'): ('none', 'none'),
+    ('PPARG', 'agonist'): ('none', 'none'),
+    ('PXR', 'agonist'): ('none', 'none'),
+
+    # --- Agonists (ml_sampling='rus', gnn_sampling='ros') ---
+    ('RXR', 'agonist'): ('rus', 'ros'),
+    ('ERB', 'agonist'): ('rus', 'ros'),
+    ('PR', 'agonist'): ('rus', 'ros'),
+    ('FXR', 'agonist'): ('rus', 'ros'),
 }
 
-# AD缓存
+# AD cache
 AD_CACHE = {}
+# Cache for top-k model selections
+_TOP_MODEL_CACHE = {}
 
+# TOP-K MODEL SELECTION (from Consensus_Model_stacking_auto.py)
+def get_top_ml_models(target, mode, ml_sampling, k=ML_TOP_K, metric='MCC'):
+    """
+    Select top-k ML models based on test set (mean MCC - std MCC).
+    Reads results_mean.xlsx / results_std.xlsx from the ML baseline directory.
+    """
+    cache_key = ('ml', target, mode, ml_sampling, k, metric)
+    if cache_key in _TOP_MODEL_CACHE:
+        return _TOP_MODEL_CACHE[cache_key]
+
+    ml_base_dir = f'{ML_BASELINE_BASE}/{target}/{mode}/{ml_sampling}'
+    mean_path = os.path.join(ml_base_dir, 'results_10to1', 'results_mean.xlsx')
+    std_path = os.path.join(ml_base_dir, 'results_10to1', 'results_std.xlsx')
+
+    if not os.path.exists(mean_path) or not os.path.exists(std_path):
+        raise FileNotFoundError(
+            f"ML results not found for {target}-{mode} (sampling={ml_sampling}). "
+            f"Expected: {mean_path}"
+        )
+
+    df_mean = pd.read_excel(mean_path, sheet_name='test')
+    df_std = pd.read_excel(std_path, sheet_name='test')
+
+    df_combined = pd.DataFrame({
+        'model': df_mean['model'],
+        'rep': df_mean['rep'],
+        f'{metric}_mean': df_mean[metric],
+        f'{metric}_std': df_std[metric]
+    })
+    df_combined['lower_bound_score'] = df_combined[f'{metric}_mean'] - df_combined[f'{metric}_std']
+    df_sorted = df_combined.sort_values(by='lower_bound_score', ascending=False)
+
+    top_k_df = df_sorted.head(k)
+    ensemble_configs = list(zip(top_k_df['model'], top_k_df['rep']))
+
+    _TOP_MODEL_CACHE[cache_key] = ensemble_configs
+    return ensemble_configs
+
+
+def get_top_gnn_models(target, mode, gnn_sampling, k=GNN_TOP_K, metric='MCC'):
+    """
+    Select top-k GNN models based on test set (mean MCC - std MCC).
+    Reads results_mean.xlsx / results_std.xlsx from the GNN baseline directory.
+    """
+    cache_key = ('gnn', target, mode, gnn_sampling, k, metric)
+    if cache_key in _TOP_MODEL_CACHE:
+        return _TOP_MODEL_CACHE[cache_key]
+
+    gnn_base_dir = f'{GNN_BASELINE_BASE}/{target}/{mode}/{gnn_sampling}'
+    task_dir = os.path.join(gnn_base_dir, "graph_results", "results_mean_std")
+    mean_path = os.path.join(task_dir, 'results_mean.xlsx')
+    std_path = os.path.join(task_dir, 'results_std.xlsx')
+
+    if not os.path.exists(mean_path) or not os.path.exists(std_path):
+        raise FileNotFoundError(
+            f"GNN results not found for {target}-{mode} (sampling={gnn_sampling}). "
+            f"Expected: {mean_path}"
+        )
+
+    df_mean = pd.read_excel(mean_path, sheet_name='Test')
+    df_std = pd.read_excel(std_path, sheet_name='Test')
+
+    df_combined = pd.DataFrame({
+        'model': df_mean['Model'],
+        f'{metric}_mean': df_mean[metric],
+        f'{metric}_std': df_std[metric]
+    })
+    df_combined['lower_bound_score'] = df_combined[f'{metric}_mean'] - df_combined[f'{metric}_std']
+    df_sorted = df_combined.sort_values(by='lower_bound_score', ascending=False)
+
+    top_k_df = df_sorted.head(k)
+    gnn_models = top_k_df['model'].tolist()
+
+    _TOP_MODEL_CACHE[cache_key] = gnn_models
+    return gnn_models
+
+
+def get_best_replicate(target, mode, ml_sampling, gnn_sampling):
+    """
+    遍历5个重复实验的 results_{rep}.xlsx，
+    选取测试集 MCC 最高的 replicate 编号。
+    """
+    cache_key = ('best_rep', target, mode, ml_sampling, gnn_sampling)
+    if cache_key in _TOP_MODEL_CACHE:
+        return _TOP_MODEL_CACHE[cache_key]
+
+    consensus_dir = os.path.join(
+        CONSENSUS_BASE, target, mode,
+        f"consensus_stacking_{ml_sampling}_{gnn_sampling}"
+    )
+
+    best_mcc = -1.0
+    best_rep = 1
+
+    for rep in range(1, NUM_REPLICATES + 1):
+        result_path = os.path.join(consensus_dir, f"results_{rep}.xlsx")
+        if not os.path.exists(result_path):
+            continue
+        try:
+            df = pd.read_excel(result_path, sheet_name='test')
+            mcc = float(df['MCC'].values[0])
+            if mcc > best_mcc:
+                best_mcc = mcc
+                best_rep = rep
+        except Exception:
+            continue
+
+    _TOP_MODEL_CACHE[cache_key] = best_rep
+    return best_rep
+
+
+# FEATURE CALCULATION (unchanged)
 @st.cache_data
 def load_threshold():
-    """加载每个训练集计算得到的的95%百分位数阈值"""
+    """加载每个训练集计算得到的95%百分位数阈值"""
     df = pd.read_csv("train_similarity_threshold.csv")
     return {(row['receptor'], row['train_type']): row['p95_similarity'] for _, row in df.iterrows()}
 
 threshold_dict = load_threshold()
+
 
 def calculate_features(smiles_list, tag):
     """计算配体的分子特征"""
@@ -124,7 +235,8 @@ def calculate_features(smiles_list, tag):
         featurizer = dc.feat.Mol2VecFingerprint(pretrain_model_path=PRETRAIN_MOL2VEC_PATH)
         return np.array([featurizer.featurize(s)[0].tolist() for s in smiles_list])
     return None
-    
+
+
 def clean_smiles_list(smiles_list):
     """标准化分子SMILES"""
     new_list = []
@@ -137,74 +249,147 @@ def clean_smiles_list(smiles_list):
             new_list.append(s)
     return new_list
 
-def load_dl_model_dynamic(model_name, target, mode):
-    """加载受体对应的超参数和权重"""
+
+
+# GNN MODEL LOADING
+def load_gnn_model(model_name, target, mode, gnn_sampling, replicate):
+    """
+    Load a GNN model using the consensus path structure.
+    Path: NURA_Baseline_gnn/{target}/{mode}/{gnn_sampling}/graph_models/Replicate_{rep}/{model_name}.pth
+    """
     json_path = os.path.join(HYPERPARAMS_DIR, f"{target}_best_hyperparameters.json")
-    weight_path = os.path.join(DL_WEIGHTS_BASE, target, mode, "ros", f"{model_name}.pth")
-    
+    pth_path = os.path.join(
+        GNN_BASELINE_BASE, target, mode, gnn_sampling,
+        "graph_models", f"Replicate_{replicate}", f"{model_name}.pth"
+    )
+
     with open(json_path, 'r') as f:
-        params = json.load(f)[f"{mode}_ros_{model_name}"]
-    
-    model_map = {"GIN": GINModel, "GCN": GCNModel, "AFP": AttentiveFP, "GT": GraphTransformerModel}
-    model_class = model_map[model_name]
-    
-    if model_name == "AFP":
-        model = model_class(in_channels=32, hidden_channels=params['hidden_channels'], out_channels=1, edge_dim=11, num_layers=params['num_layers'], num_timesteps=params['num_timesteps'])
-    elif model_name == "GT":
-        model = model_class(in_channels=32, hidden_channels=params['hidden_channels'], out_channels=1, edge_dim=11, num_layers=params['num_layers'], dropout=params['dropout'], n_heads=params.get('n_heads', 4))
-    else:
-        model = model_class(in_channels=32, hidden_channels=params['hidden_channels'], out_channels=1, edge_dim=11, num_layers=params['num_layers'], dropout=params['dropout'])
-    
-    model.load_state_dict(torch.load(weight_path, map_location=device))
-    return model.to(device).eval()
+        all_params = json.load(f)
 
-def run_prediction(target, mode, smiles_list):
-    """运行预测"""
-    all_probs = []
+    study_name = f"{mode}_{gnn_sampling}_{model_name}"
+    if study_name not in all_params:
+        raise KeyError(f"Hyperparameter key '{study_name}' not found in {json_path}")
+    params = all_params[study_name]
+
+    model_class = GNN_CLASS_MAP[model_name]
+
+    if model_class == GraphTransformerModel:
+        model = model_class(in_channels=32, hidden_channels=params['hidden_channels'], out_channels=1,
+                            edge_dim=11, num_layers=params['num_layers'], dropout=params['dropout'],
+                            n_heads=params['n_heads'])
+    elif model_class == AttentiveFP:
+        model = model_class(in_channels=32, hidden_channels=params['hidden_channels'], out_channels=1,
+                            edge_dim=11, num_layers=params['num_layers'], dropout=params['dropout'],
+                            num_timesteps=params['num_timesteps'])
+    else:
+        model = model_class(in_channels=32, hidden_channels=params['hidden_channels'], out_channels=1,
+                            edge_dim=11, num_layers=params['num_layers'], dropout=params['dropout'])
+
+    model.load_state_dict(torch.load(pth_path, map_location=device))
+    model.to(device)
+    model.eval()
+    return model
+
+
+
+# STACKING PREDICTION (Consensus methodology)
+def run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling):
+    """
+    Run prediction using the consensus stacking pipeline:
+    1. Select top-k ML and top-k GNN models by test MCC
+    2. Generate base predictions from each sub-model
+    3. Apply the LogisticRegressionCV meta-model for final probability
+    """
     smiles_list = clean_smiles_list(smiles_list)
-    
-    if (target, mode) in ENSEMBLE_TASKS:
-        config = ENSEMBLE_SUBMODELS.get((target, mode))
-        if not config:
-            st.error(f"Ensemble configuration missing for {target}-{mode}")
-            return None, None
 
-        #ensemble ML
-        for sampling, filename in config['ml']:
-            path = os.path.join(BASE_PATH, target, "ml_final_models", mode, sampling, filename)
-            if os.path.exists(path):
-                model = load(path)
-                tag = filename.split('+')[1].split('.')[0]
-                X = calculate_features(smiles_list, tag)
-                all_probs.append(model.predict_proba(X)[:, 1])
+    # 0. Determine the best replicate by test MCC
+    best_rep = get_best_replicate(target, mode, ml_sampling, gnn_sampling)
 
-        #ensemble DL
-        graph_data = [mol_to_graph_data_obj_simple(Chem.MolFromSmiles(s)) for s in smiles_list]
-        loader = DataLoader(graph_data, batch_size=len(smiles_list))
-        for m_name in config['dl']:
-            try:
-                model = load_dl_model_dynamic(m_name, target, mode)
-                with torch.no_grad():
-                    for data in loader:
-                        data = data.to(device)
-                        out = model(data.x.float(), data.edge_index.long(), data.edge_attr.float(), data.batch.long())
-                        all_probs.append(torch.sigmoid(out).cpu().numpy().flatten())
-            except Exception as e:
-                st.warning(f"DL Model {m_name} failed: {e}")
-                
-        final_probs = np.mean(all_probs, axis=0)
-    else:
-        #single model
-        model_file = SINGLE_MODEL_CONFIG.get((target, mode))
-        path = os.path.join(BASE_PATH, target, "ml_final_models", mode, "none", model_file)
-        tag = model_file.split('+')[1].split('.')[0]
-        X = calculate_features(smiles_list, tag)
-        model = load(path)
-        final_probs = model.predict_proba(X)[:, 1]
+    # 1. Get top-k model configurations
+    try:
+        ml_ensemble = get_top_ml_models(target, mode, ml_sampling, k=ML_TOP_K)
+        gnn_models = get_top_gnn_models(target, mode, gnn_sampling, k=GNN_TOP_K)
+    except FileNotFoundError as e:
+        st.error(f"Consensus results not found for {target}-{mode}: {e}")
+        return None, None
+
+    # 2. Load stacking meta-model
+    consensus_dir = os.path.join(
+        CONSENSUS_BASE, target, mode,
+        f"consensus_stacking_{ml_sampling}_{gnn_sampling}"
+    )
+    meta_model_path = os.path.join(consensus_dir, f"stacking_model_{best_rep}.joblib")
+
+    if not os.path.exists(meta_model_path):
+        st.error(f"Stacking meta-model not found: {meta_model_path}")
+        return None, None
+
+    meta_model = load(meta_model_path)
+
+    all_probs = []
+
+    # 3. Generate ML base predictions
+    for model_name, feat_type in ml_ensemble:
+        model_path = os.path.join(
+            ML_BASELINE_BASE, target, mode, ml_sampling,
+            "final_models", f"Replicate_{best_rep}",
+            f"{model_name}_{feat_type}.joblib"
+        )
+        if not os.path.exists(model_path):
+            st.warning(f"ML model missing: {model_path}")
+            continue
+
+        base_model = load(model_path)
+        X = calculate_features(smiles_list, feat_type)
+        if X is not None:
+            all_probs.append(base_model.predict_proba(X)[:, 1])
+
+    # 4. Generate GNN base predictions
+    graph_data = [mol_to_graph_data_obj_simple(Chem.MolFromSmiles(s)) for s in smiles_list]
+    loader = DataLoader(graph_data, batch_size=len(smiles_list))
+
+    for model_name in gnn_models:
+        try:
+            model = load_gnn_model(model_name, target, mode, gnn_sampling, best_rep)
+            with torch.no_grad():
+                for data in loader:
+                    data = data.to(device)
+                    out = model(data.x.float(), data.edge_index.long(),
+                               data.edge_attr.float(), data.batch.long())
+                    all_probs.append(torch.sigmoid(out).cpu().numpy().flatten())
+        except Exception as e:
+            st.warning(f"GNN model {model_name} failed: {e}")
+
+    if not all_probs:
+        st.error(f"No base model predictions generated for {target}-{mode}")
+        return None, None
+
+    # 5. Stack predictions and apply meta-model
+    X_meta = np.column_stack(all_probs)
+    final_probs = meta_model.predict_proba(X_meta)[:, 1]
 
     preds = (final_probs >= 0.5).astype(int)
     return preds, final_probs
-    
+
+
+# PREDICTION ENTRY POINT
+def run_prediction(target, mode, smiles_list):
+    """
+    Consensus stacking prediction:
+    1. Select top-k ML and top-k GNN models by test set MCC
+    2. Generate base predictions from each sub-model
+    3. Apply the LogisticRegressionCV meta-model for final probability
+    """
+    config = CONSENSUS_CONFIGS.get((target, mode))
+    if config is None:
+        st.error(f"No consensus configuration for {target}-{mode}")
+        return None, None
+
+    ml_sampling, gnn_sampling = config
+    return run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling)
+
+
+# APPLICABILITY DOMAIN (unchanged)
 def split_none(df):
     """划分数据"""
     X = df.iloc[:, 1:-1]
@@ -217,6 +402,7 @@ def split_none(df):
     )
     return X_train, X_val, X_test
 
+
 def array_to_fp(row):
     """将0/1数组转为RDKit指纹"""
     bv = ExplicitBitVect(len(row))
@@ -224,6 +410,7 @@ def array_to_fp(row):
         if int(b) == 1:
             bv.SetBit(i)
     return bv
+
 
 def smiles_to_fp(smiles_list):
     """SMILES转Morgan指纹"""
@@ -237,6 +424,7 @@ def smiles_to_fp(smiles_list):
             valid_idx.append(i)
     return fps, valid_idx
 
+
 def calculate_ad(test_fps, train_fps, threshold, k=5):
     """基于top-k平均相似度的AD判定"""
     results = {}
@@ -247,6 +435,7 @@ def calculate_ad(test_fps, train_fps, threshold, k=5):
         avg_sim = np.mean(top_k)
         results[idx] = 'Inside AD' if avg_sim >= threshold else 'Outside AD'
     return results
+
 
 def load_train_fps(receptor, train_type):
     """加载训练集分子指纹"""
@@ -263,6 +452,7 @@ def load_train_fps(receptor, train_type):
 
     AD_CACHE[key] = fps
     return fps
+
 
 def run_ad(smiles_list, receptor, mode):
     """计算AD"""
@@ -286,27 +476,27 @@ def run_ad(smiles_list, receptor, mode):
 
     return results
 
-#Streamlit
+
+
+# STREAMLIT UI
 def main():
     st.title("Nuclear Receptor Activity Prediction Platform")
     st.image("Schematic diagram.png", caption="Schematic Diagram", use_column_width=True)
-    
-    # 所有任务
-    ALL_TASKS = list(set(list(SINGLE_MODEL_CONFIG.keys()) + ENSEMBLE_TASKS))
-    ALL_TASKS = sorted(ALL_TASKS)
 
-    # 侧边栏
+    # All tasks from consensus configuration
+    ALL_TASKS = sorted(CONSENSUS_CONFIGS.keys())
+
+    # Sidebar
     st.sidebar.header("Target Configuration")
-    all_targets = sorted(list(set([k[0] for k in SINGLE_MODEL_CONFIG.keys()] + [k[0] for k in ENSEMBLE_TASKS])))
+    all_targets = sorted(list(set([k[0] for k in ALL_TASKS])))
     selected_target = st.sidebar.selectbox("Select Receptor", all_targets)
-    
+
     available_modes = sorted(list(set(
-        [k[1] for k in SINGLE_MODEL_CONFIG.keys() if k[0] == selected_target] + 
-        [k[1] for k in ENSEMBLE_TASKS if k[0] == selected_target]
+        [k[1] for k in ALL_TASKS if k[0] == selected_target]
     )))
     selected_mode = st.sidebar.selectbox("Select Mode", available_modes)
 
-    # 输入区域
+    # Input area
     input_type = st.radio("Input Method", ["Draw Molecule", "SMILES String", "Batch CSV Upload"])
     smiles_list = []
 
@@ -328,14 +518,14 @@ def main():
             if "SMILES" in df.columns:
                 smiles_list = df["SMILES"].dropna().tolist()
 
-    # 按钮
+    # Buttons
     btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
 
     with btn_col2:
         start_single = st.button("Start Calculation", use_container_width=True)
         start_all = st.button("Run All Targets", use_container_width=True)
 
-    # 单任务预测
+    # Single task prediction
     if start_single and smiles_list:
         with st.spinner("Calculating..."):
             preds, probs = run_prediction(selected_target, selected_mode, smiles_list)
@@ -356,7 +546,7 @@ def main():
                     if mol:
                         st.image(Draw.MolToImage(mol, size=(300, 300)))
 
-    # 全部任务预测
+    # All tasks prediction
     if start_all and smiles_list:
         st.warning("Running all targets may take several minutes.")
 
@@ -382,7 +572,7 @@ def main():
                             "Applicability Domain": ad_results[j]
                         })
 
-                    # 清理GPU缓存
+                    # Clear GPU cache
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
@@ -393,13 +583,14 @@ def main():
 
             res_df = pd.DataFrame(all_results)
 
-            # 原始结果
+            # Results
             st.subheader("All Predictions")
             st.dataframe(res_df)
 
-            # 下载
+            # Download
             csv = res_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Results", csv, "all_predictions.csv", "text/csv")
+
 
 if __name__ == "__main__":
     main()
