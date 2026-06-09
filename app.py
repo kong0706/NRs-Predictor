@@ -11,8 +11,6 @@ import sys
 from joblib import load
 from rdkit import Chem
 from rdkit.Chem import Descriptors, AllChem, MACCSkeys, Draw
-from rdkit.DataStructs import ExplicitBitVect, BulkTanimotoSimilarity
-from sklearn.model_selection import train_test_split
 
 import deepchem as dc
 from streamlit_ketcher import st_ketcher
@@ -348,56 +346,59 @@ def run_prediction(target, mode, smiles_list):
 @st.cache_data
 def load_threshold():
     """加载每个训练集计算得到的95%百分位数阈值"""
-    df = pd.read_csv("train_similarity_threshold.csv")
+    df = pd.read_csv("similarity_threshold.csv")
     return {(row['receptor'], row['train_type']): row['p95_similarity'] for _, row in df.iterrows()}
 
 threshold_dict = load_threshold()
 
-def split_none(df):
-    """划分数据"""
-    X = df.iloc[:, 1:-1]
-    y = df.iloc[:, -1]
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y, test_size=0.2, random_state=6, stratify=y
-    )
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, test_size=0.5, random_state=6, stratify=y_temp
-    )
-    return X_train, X_val, X_test
-
-def array_to_fp(row):
-    """将0/1数组转为RDKit指纹"""
-    bv = ExplicitBitVect(len(row))
-    for i, b in enumerate(row):
-        if int(b) == 1:
-            bv.SetBit(i)
-    return bv
-
-def smiles_to_fp(smiles_list):
-    """SMILES转Morgan指纹"""
+def smiles_to_fp(smiles_list, nBits=2048):
     fps = []
     valid_idx = []
     for i, smi in enumerate(smiles_list):
         mol = Chem.MolFromSmiles(smi)
         if mol:
-            fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2048)
-            fps.append(fp)
+            fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=nBits)
+            # 转为numpy 0/1数组
+            arr = np.zeros(nBits, dtype=np.int8)
+            for bit in fp.GetOnBits():
+                arr[bit] = 1
+            fps.append(arr)
             valid_idx.append(i)
-    return fps, valid_idx
+    return np.array(fps), valid_idx
 
 def calculate_ad(test_fps, train_fps, threshold, k=5):
-    """基于top-k平均相似度的AD判定"""
+    n_test = test_fps.shape[0]
+
+    # 交集矩阵: (n_test, n_train)
+    intersection = test_fps @ train_fps.T
+
+    # 每个分子的置1位数
+    test_sums = test_fps.sum(axis=1)      # (n_test,)
+    train_sums = train_fps.sum(axis=1)    # (n_train,)
+
+    # 并集矩阵: (n_test, n_train)
+    union = test_sums[:, None] + train_sums[None, :] - intersection
+
+    # Tanimoto = 交集 / 并集
+    with np.errstate(invalid='ignore'):
+        sims = intersection / union
+    sims = np.nan_to_num(sims, nan=0.0)
+
+    # 对每个测试分子取 top-k 平均
     results = {}
-    for idx, fp in enumerate(test_fps):
-        sims = BulkTanimotoSimilarity(fp, train_fps)
-        sims = np.array(sims)
-        top_k = np.partition(sims, -k)[-k:]
-        avg_sim = np.mean(top_k)
+    for idx in range(n_test):
+        row_sims = sims[idx]
+        if len(row_sims) >= k:
+            top_k = np.partition(row_sims, -k)[-k:]
+        else:
+            top_k = row_sims
+        avg_sim = top_k.mean()
         results[idx] = 'Inside AD' if avg_sim >= threshold else 'Outside AD'
+
     return results
 
 def load_train_fps(receptor, train_type):
-    """加载训练集分子指纹"""
+    """加载训练集分子指纹（全量数据，numpy数组）"""
     key = (receptor, train_type)
 
     if key in AD_CACHE:
@@ -406,8 +407,8 @@ def load_train_fps(receptor, train_type):
     path = os.path.join("datasets", receptor, train_type, "morgan", "morgan.csv")
     df = pd.read_csv(path)
 
-    X_train, _, _ = split_none(df)
-    fps = [array_to_fp(row.values) for _, row in X_train.iterrows()]
+    # 使用全部数据，直接转为numpy数组
+    fps = df.iloc[:, 1:-1].values.astype(np.int8)
 
     AD_CACHE[key] = fps
     return fps
