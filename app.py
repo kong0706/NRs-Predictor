@@ -175,50 +175,6 @@ def get_top_gnn_models(target, mode, gnn_sampling, k=GNN_TOP_K, metric='MCC'):
     return gnn_models
 
 
-def get_best_replicate(target, mode, ml_sampling, gnn_sampling):
-    """
-    遍历5个重复实验的 results_{rep}.xlsx，
-    选取测试集 MCC 最高的 replicate 编号。
-    """
-    cache_key = ('best_rep', target, mode, ml_sampling, gnn_sampling)
-    if cache_key in _TOP_MODEL_CACHE:
-        return _TOP_MODEL_CACHE[cache_key]
-
-    consensus_dir = os.path.join(
-        CONSENSUS_BASE, target, mode,
-        f"consensus_stacking_{ml_sampling}_{gnn_sampling}"
-    )
-
-    best_mcc = -1.0
-    best_rep = 1
-
-    for rep in range(1, NUM_REPLICATES + 1):
-        result_path = os.path.join(consensus_dir, f"results_{rep}.xlsx")
-        if not os.path.exists(result_path):
-            continue
-        try:
-            df = pd.read_excel(result_path, sheet_name='test')
-            mcc = float(df['MCC'].values[0])
-            if mcc > best_mcc:
-                best_mcc = mcc
-                best_rep = rep
-        except Exception:
-            continue
-
-    _TOP_MODEL_CACHE[cache_key] = best_rep
-    return best_rep
-
-
-# FEATURE CALCULATION (unchanged)
-@st.cache_data
-def load_threshold():
-    """加载每个训练集计算得到的95%百分位数阈值"""
-    df = pd.read_csv("train_similarity_threshold.csv")
-    return {(row['receptor'], row['train_type']): row['p95_similarity'] for _, row in df.iterrows()}
-
-threshold_dict = load_threshold()
-
-
 def calculate_features(smiles_list, tag):
     """计算配体的分子特征"""
     tag = tag.lower()
@@ -292,20 +248,20 @@ def load_gnn_model(model_name, target, mode, gnn_sampling, replicate):
 
 
 
-# STACKING PREDICTION (Consensus methodology)
+# STACKING PREDICTION (Consensus methodology — 5-replicate ensemble averaging)
 def run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling):
     """
     Run prediction using the consensus stacking pipeline:
-    1. Select top-k ML and top-k GNN models by test MCC
-    2. Generate base predictions from each sub-model
-    3. Apply the LogisticRegressionCV meta-model for final probability
+    1. Select top-k ML and top-k GNN models by test MCC (shared across all replicates)
+    2. For each of the 5 random-seed replicates:
+       a. Load that replicate's base models and stacking meta-model
+       b. Generate base predictions from each sub-model
+       c. Apply the LogisticRegressionCV meta-model for that replicate's final probability
+    3. Average the final probabilities across all 5 replicates
     """
     smiles_list = clean_smiles_list(smiles_list)
 
-    # 0. Determine the best replicate by test MCC
-    best_rep = get_best_replicate(target, mode, ml_sampling, gnn_sampling)
-
-    # 1. Get top-k model configurations
+    # 1. Get top-k model configurations (same for all replicates)
     try:
         ml_ensemble = get_top_ml_models(target, mode, ml_sampling, k=ML_TOP_K)
         gnn_models = get_top_gnn_models(target, mode, gnn_sampling, k=GNN_TOP_K)
@@ -313,60 +269,70 @@ def run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling
         st.error(f"Consensus results not found for {target}-{mode}: {e}")
         return None, None
 
-    # 2. Load stacking meta-model
     consensus_dir = os.path.join(
         CONSENSUS_BASE, target, mode,
         f"consensus_stacking_{ml_sampling}_{gnn_sampling}"
     )
-    meta_model_path = os.path.join(consensus_dir, f"stacking_model_{best_rep}.joblib")
 
-    if not os.path.exists(meta_model_path):
-        st.error(f"Stacking meta-model not found: {meta_model_path}")
-        return None, None
+    all_rep_final_probs = []  # store final probabilities from each replicate
 
-    meta_model = load(meta_model_path)
-
-    all_probs = []
-
-    # 3. Generate ML base predictions
-    for model_name, feat_type in ml_ensemble:
-        model_path = os.path.join(
-            ML_BASELINE_BASE, target, mode, ml_sampling,
-            "final_models", f"Replicate_{best_rep}",
-            f"{model_name}_{feat_type}.joblib"
-        )
-        if not os.path.exists(model_path):
-            st.warning(f"ML model missing: {model_path}")
-            continue
-
-        base_model = load(model_path)
-        X = calculate_features(smiles_list, feat_type)
-        if X is not None:
-            all_probs.append(base_model.predict_proba(X)[:, 1])
-
-    # 4. Generate GNN base predictions
+    # 2. Pre-compute GNN graph data (same across replicates)
     graph_data = [mol_to_graph_data_obj_simple(Chem.MolFromSmiles(s)) for s in smiles_list]
     loader = DataLoader(graph_data, batch_size=len(smiles_list))
 
-    for model_name in gnn_models:
-        try:
-            model = load_gnn_model(model_name, target, mode, gnn_sampling, best_rep)
-            with torch.no_grad():
-                for data in loader:
-                    data = data.to(device)
-                    out = model(data.x.float(), data.edge_index.long(),
-                               data.edge_attr.float(), data.batch.long())
-                    all_probs.append(torch.sigmoid(out).cpu().numpy().flatten())
-        except Exception as e:
-            st.warning(f"GNN model {model_name} failed: {e}")
+    for rep in range(1, NUM_REPLICATES + 1):
+        # 2a. Load stacking meta-model for this replicate
+        meta_model_path = os.path.join(consensus_dir, f"stacking_model_{rep}.joblib")
+        if not os.path.exists(meta_model_path):
+            st.warning(f"Stacking meta-model missing for replicate {rep}: {meta_model_path}")
+            continue
 
-    if not all_probs:
-        st.error(f"No base model predictions generated for {target}-{mode}")
+        meta_model = load(meta_model_path)
+        all_probs = []
+
+        # 2b. Generate ML base predictions for this replicate
+        for model_name, feat_type in ml_ensemble:
+            model_path = os.path.join(
+                ML_BASELINE_BASE, target, mode, ml_sampling,
+                "final_models", f"Replicate_{rep}",
+                f"{model_name}_{feat_type}.joblib"
+            )
+            if not os.path.exists(model_path):
+                continue
+
+            base_model = load(model_path)
+            X = calculate_features(smiles_list, feat_type)
+            if X is not None:
+                all_probs.append(base_model.predict_proba(X)[:, 1])
+
+        # 2c. Generate GNN base predictions for this replicate
+        for model_name in gnn_models:
+            try:
+                model = load_gnn_model(model_name, target, mode, gnn_sampling, rep)
+                with torch.no_grad():
+                    for data in loader:
+                        data = data.to(device)
+                        out = model(data.x.float(), data.edge_index.long(),
+                                   data.edge_attr.float(), data.batch.long())
+                        all_probs.append(torch.sigmoid(out).cpu().numpy().flatten())
+            except Exception:
+                continue
+
+        if not all_probs:
+            continue
+
+        # 2d. Stack predictions and apply meta-model for this replicate
+        X_meta = np.column_stack(all_probs)
+        rep_final_probs = meta_model.predict_proba(X_meta)[:, 1]
+        all_rep_final_probs.append(rep_final_probs)
+
+    if not all_rep_final_probs:
+        st.error(f"No replicate predictions generated for {target}-{mode}")
         return None, None
 
-    # 5. Stack predictions and apply meta-model
-    X_meta = np.column_stack(all_probs)
-    final_probs = meta_model.predict_proba(X_meta)[:, 1]
+    # 3. Average final probabilities across all replicates
+    all_rep_final_probs = np.array(all_rep_final_probs)  # shape: (n_valid_reps, n_samples)
+    final_probs = np.mean(all_rep_final_probs, axis=0)
 
     preds = (final_probs >= 0.5).astype(int)
     return preds, final_probs
@@ -375,10 +341,11 @@ def run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling
 # PREDICTION ENTRY POINT
 def run_prediction(target, mode, smiles_list):
     """
-    Consensus stacking prediction:
+    Consensus stacking prediction with 5-replicate ensemble averaging:
     1. Select top-k ML and top-k GNN models by test set MCC
-    2. Generate base predictions from each sub-model
-    3. Apply the LogisticRegressionCV meta-model for final probability
+    2. For each of the 5 replicates, generate base predictions and apply
+       the LogisticRegressionCV meta-model for that replicate's final probability
+    3. Average the final probabilities across all 5 replicates
     """
     config = CONSENSUS_CONFIGS.get((target, mode))
     if config is None:
@@ -389,7 +356,15 @@ def run_prediction(target, mode, smiles_list):
     return run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling)
 
 
-# APPLICABILITY DOMAIN (unchanged)
+@st.cache_data
+def load_threshold():
+    """加载每个训练集计算得到的95%百分位数阈值"""
+    df = pd.read_csv("train_similarity_threshold.csv")
+    return {(row['receptor'], row['train_type']): row['p95_similarity'] for _, row in df.iterrows()}
+
+threshold_dict = load_threshold()
+
+
 def split_none(df):
     """划分数据"""
     X = df.iloc[:, 1:-1]
