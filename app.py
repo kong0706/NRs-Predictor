@@ -26,7 +26,6 @@ from torch_geometric.nn.models import AttentiveFP
 warnings.filterwarnings("ignore")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
 # PATH CONFIGURATION
 PRETRAIN_MOL2VEC_PATH = './model_300dim.pkl'
 HYPERPARAMS_DIR = './best_hyperparameters'
@@ -40,7 +39,6 @@ ML_TOP_K = 5     # Number of top ML models to select
 GNN_TOP_K = 2    # Number of top GNN models to select
 NUM_REPLICATES = 5  # Total replicates from Consensus_Model_stacking_auto.py
 
-
 # GNN MODEL CLASS MAP
 GNN_CLASS_MAP = {
     "GT": GraphTransformerModel,
@@ -49,7 +47,6 @@ GNN_CLASS_MAP = {
     "GAT": GATModel,
     "AFP": AttentiveFP
 }
-
 
 # CONSENSUS TASK CONFIGURATION
 # Derived from Consensus_Model_stacking_auto.py CONFIGS
@@ -174,7 +171,6 @@ def get_top_gnn_models(target, mode, gnn_sampling, k=GNN_TOP_K, metric='MCC'):
     _TOP_MODEL_CACHE[cache_key] = gnn_models
     return gnn_models
 
-
 def calculate_features(smiles_list, tag):
     """计算配体的分子特征"""
     tag = tag.lower()
@@ -192,7 +188,6 @@ def calculate_features(smiles_list, tag):
         return np.array([featurizer.featurize(s)[0].tolist() for s in smiles_list])
     return None
 
-
 def clean_smiles_list(smiles_list):
     """标准化分子SMILES"""
     new_list = []
@@ -204,8 +199,6 @@ def clean_smiles_list(smiles_list):
         else:
             new_list.append(s)
     return new_list
-
-
 
 # GNN MODEL LOADING
 def load_gnn_model(model_name, target, mode, gnn_sampling, replicate):
@@ -245,8 +238,6 @@ def load_gnn_model(model_name, target, mode, gnn_sampling, replicate):
     model.to(device)
     model.eval()
     return model
-
-
 
 # STACKING PREDICTION (Consensus methodology — 5-replicate ensemble averaging)
 def run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling):
@@ -337,7 +328,6 @@ def run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling
     preds = (final_probs >= 0.5).astype(int)
     return preds, final_probs
 
-
 # PREDICTION ENTRY POINT
 def run_prediction(target, mode, smiles_list):
     """
@@ -355,7 +345,6 @@ def run_prediction(target, mode, smiles_list):
     ml_sampling, gnn_sampling = config
     return run_stacking_prediction(target, mode, smiles_list, ml_sampling, gnn_sampling)
 
-
 @st.cache_data
 def load_threshold():
     """加载每个训练集计算得到的95%百分位数阈值"""
@@ -363,7 +352,6 @@ def load_threshold():
     return {(row['receptor'], row['train_type']): row['p95_similarity'] for _, row in df.iterrows()}
 
 threshold_dict = load_threshold()
-
 
 def split_none(df):
     """划分数据"""
@@ -377,7 +365,6 @@ def split_none(df):
     )
     return X_train, X_val, X_test
 
-
 def array_to_fp(row):
     """将0/1数组转为RDKit指纹"""
     bv = ExplicitBitVect(len(row))
@@ -385,7 +372,6 @@ def array_to_fp(row):
         if int(b) == 1:
             bv.SetBit(i)
     return bv
-
 
 def smiles_to_fp(smiles_list):
     """SMILES转Morgan指纹"""
@@ -399,7 +385,6 @@ def smiles_to_fp(smiles_list):
             valid_idx.append(i)
     return fps, valid_idx
 
-
 def calculate_ad(test_fps, train_fps, threshold, k=5):
     """基于top-k平均相似度的AD判定"""
     results = {}
@@ -410,7 +395,6 @@ def calculate_ad(test_fps, train_fps, threshold, k=5):
         avg_sim = np.mean(top_k)
         results[idx] = 'Inside AD' if avg_sim >= threshold else 'Outside AD'
     return results
-
 
 def load_train_fps(receptor, train_type):
     """加载训练集分子指纹"""
@@ -427,7 +411,6 @@ def load_train_fps(receptor, train_type):
 
     AD_CACHE[key] = fps
     return fps
-
 
 def run_ad(smiles_list, receptor, mode):
     """计算AD"""
@@ -450,8 +433,6 @@ def run_ad(smiles_list, receptor, mode):
             results.append("Invalid SMILES")
 
     return results
-
-
 
 # STREAMLIT UI
 def main():
@@ -565,7 +546,6 @@ def main():
             # Download
             csv = res_df.to_csv(index=False).encode('utf-8')
             st.download_button("Download Results", csv, "all_predictions.csv", "text/csv")
-
 
 if __name__ == "__main__":
     main()
