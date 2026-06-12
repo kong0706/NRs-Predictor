@@ -45,7 +45,7 @@ CONSENSUS_CONFIGS = {
     ('PR','agonist'):('rus','ros'), ('FXR','agonist'):('rus','ros'),
     ('TSHR', 'agonist'): ('none', 'none'),
     ('TSHR', 'antagonist'): ('rus', 'ros'),
-    # ('TR', 'antagonist'): ('none', 'none'),
+    ('TR', 'antagonist'): ('none', 'none'),
     ('NIS', 'binder'): ('rus', 'ros'),
     ('TPO', 'binder'): ('none', 'none'),
     ('DIO1', 'binder'): ('rus', 'ros'),
