@@ -43,6 +43,14 @@ CONSENSUS_CONFIGS = {
     ('PPARG','agonist'):('none','none'), ('PXR','agonist'):('none','none'),
     ('RXR','agonist'):('rus','ros'), ('ERB','agonist'):('rus','ros'),
     ('PR','agonist'):('rus','ros'), ('FXR','agonist'):('rus','ros'),
+    ('TSHR', 'agonist'): ('none', 'none'),
+    ('TSHR', 'antagonist'): ('rus', 'ros'),
+    # ('TR', 'antagonist'): ('none', 'none'),
+    ('NIS', 'binder'): ('rus', 'ros'),
+    ('TPO', 'binder'): ('none', 'none'),
+    ('DIO1', 'binder'): ('rus', 'ros'),
+    ('DIO2', 'binder'): ('none', 'none'),
+    ('DIO3', 'binder'): ('none', 'none')
 }
 
 AD_CACHE = {}
