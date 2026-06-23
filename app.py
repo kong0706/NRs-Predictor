@@ -248,8 +248,10 @@ def main():
         if s: smiles_list = [s.strip()]
     else:
         file = st.file_uploader("Upload CSV", type=["csv"])
-        if file and "SMILES" in pd.read_csv(file).columns:
-            smiles_list = pd.read_csv(file)["SMILES"].dropna().tolist()
+        if file is not None:
+            df = pd.read_csv(file)
+            if "SMILES" in df.columns:
+                smiles_list = df["SMILES"].dropna().tolist()
 
     btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
     with btn_col2:
