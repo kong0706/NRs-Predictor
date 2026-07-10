@@ -235,8 +235,38 @@ def main():
     available_modes = sorted(set(k[1] for k in ALL_TASKS if k[0] == selected_target))
     selected_mode = st.sidebar.selectbox("Select Mode", available_modes)
 
+    # ── Tutorial ──
+    with st.sidebar.expander("📖 Tutorial"):
+        st.markdown("""欢迎来到核受体活性预测平台！
+
+**1. 平台概述**
+
+该平台预测小分子在不同效应（结合剂、激动剂、拮抗剂）下对各种靶标的活性。
+
+**2. 使用说明**
+
+**第一步：选择你的靶标。** 先选择你想要预测的核受体，然后选择效应类型：结合剂、激动剂或拮抗剂。
+
+**第二步：输入你的分子。** 有三种输入可供选择，选择一种输入方法：
+- **Draw Molecule：** 使用化学结构编辑器绘制分子，绘制结束后需点击Apply，编辑器下方会显示SMILES。
+- **SMILES String：** 直接粘贴分子的SMILES。
+- **Batch CSV Upload：** 上传带有SMILES列的csv文件批量预测（如有其他列，也会被保留）。
+
+**第三步：开始你的预测。**
+- **Start Calculation：** 仅预测所选的靶标和效应类型。
+- **Run all Targets：** 预测所有的靶标和效应类型。
+
+**第四步：解读输出结果。**
+
+输出结果包括SMILES、Probability、Outcome、Applicability Domain，分别表示输入分子、预测概率、结果和适用域。预测概率在0-1之间，值越接近1，表明更可能表现出效应。概率≥0.5，结果输出为Active，概率<0.5，结果输出为Inactive。适用域包括Inside AD和Outside AD，Inside AD表明分子与训练数据较相似，预测结果可靠，Outside AD则相反。
+
+**第五步：下载输出结果。**
+
+在"Run all Targets"之后，您可以使用底部的"Download Results"按钮将所有预测下载为csv文件。""")
+
     input_type = st.radio("Input Method", ["Draw Molecule", "SMILES String", "Batch CSV Upload"])
     smiles_list = []
+    original_df = None  # 保存上传的原始 DataFrame，用于结果合并
 
     if input_type == "Draw Molecule":
         drawn = st_ketcher("")
@@ -247,11 +277,18 @@ def main():
         s = st.text_input("Enter SMILES")
         if s: smiles_list = [s.strip()]
     else:
-        file = st.file_uploader("Upload CSV", type=["csv"])
+        file = st.file_uploader("Upload CSV (must contain a 'SMILES' column)", type=["csv"])
+        # Example CSV download
+        with open("example.csv", "r") as f:
+            st.download_button(
+                "📥 Download Example CSV", f.read(),
+                file_name="example.csv", mime="text/csv",
+                help="Download an example CSV file to see the required format."
+            )
         if file is not None:
-            df = pd.read_csv(file)
-            if "SMILES" in df.columns:
-                smiles_list = df["SMILES"].dropna().tolist()
+            original_df = pd.read_csv(file)
+            if "SMILES" in original_df.columns:
+                smiles_list = original_df["SMILES"].dropna().tolist()
 
     btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 1])
     with btn_col2:
@@ -271,7 +308,10 @@ def main():
                     "Outcome": ["Active" if p == 1 else "Inactive" for p in preds],
                     "Applicability Domain": ad_results,
                 })
-                st.table(res_df)
+                # 如果上传了 CSV，保留原始列
+                if original_df is not None:
+                    res_df = original_df.merge(res_df, on="SMILES", how="left")
+                st.dataframe(res_df)
                 if len(smiles_list) == 1:
                     mol = Chem.MolFromSmiles(smiles_list[0])
                     if mol: st.image(Draw.MolToImage(mol, size=(300, 300)))
@@ -300,6 +340,9 @@ def main():
                 progress.progress((i + 1) / len(ALL_TASKS))
 
             res_df = pd.DataFrame(all_results)
+            # 如果上传了 CSV，保留原始列
+            if original_df is not None:
+                res_df = original_df.merge(res_df, on="SMILES", how="left")
             st.subheader("All Predictions")
             st.dataframe(res_df)
             st.download_button("Download Results", res_df.to_csv(index=False).encode('utf-8'),
