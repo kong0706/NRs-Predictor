@@ -2,6 +2,7 @@ import streamlit as st
 st.set_page_config(page_title="NURA Activity Predictor", layout="wide")
 
 import os, json, warnings, numpy as np, pandas as pd, torch
+from io import BytesIO
 from joblib import load
 from rdkit import Chem
 from rdkit.Chem import Descriptors, AllChem, MACCSkeys, Draw
@@ -250,7 +251,7 @@ def main():
 **第二步：输入你的分子。** 有三种输入可供选择，选择一种输入方法：
 - **Draw Molecule：** 使用化学结构编辑器绘制分子，绘制结束后需点击Apply，编辑器下方会显示SMILES。
 - **SMILES String：** 直接粘贴分子的SMILES。
-- **Batch CSV Upload：** 上传带有SMILES列的csv文件批量预测（如有其他列，也会被保留）。
+- **Batch Excel Upload：** 上传带有SMILES列的Excel文件批量预测（如有其他列，也会被保留）。
 
 **第三步：开始你的预测。**
 - **Start Calculation：** 仅预测所选的靶标和效应类型。
@@ -262,9 +263,9 @@ def main():
 
 **第五步：下载输出结果。**
 
-在"Run all Targets"之后，您可以使用底部的"Download Results"按钮将所有预测下载为csv文件。""")
+在"Run all Targets"之后，您可以使用底部的"Download Results"按钮将所有预测下载为Excel文件。""")
 
-    input_type = st.radio("Input Method", ["Draw Molecule", "SMILES String", "Batch CSV Upload"])
+    input_type = st.radio("Input Method", ["Draw Molecule", "SMILES String", "Batch Excel Upload"])
     smiles_list = []
     original_df = None  # 保存上传的原始 DataFrame，用于结果合并
 
@@ -277,16 +278,17 @@ def main():
         s = st.text_input("Enter SMILES")
         if s: smiles_list = [s.strip()]
     else:
-        file = st.file_uploader("Upload CSV (must contain a 'SMILES' column)", type=["csv"])
-        # Example CSV download
-        with open("example.csv", "r") as f:
+        file = st.file_uploader("Upload Excel file (must contain a 'SMILES' column)", type=["xlsx"])
+        # Example Excel download
+        with open("example.xlsx", "rb") as f:
             st.download_button(
-                "📥 Download Example CSV", f.read(),
-                file_name="example.csv", mime="text/csv",
-                help="Download an example CSV file to see the required format."
+                "📥 Download Example File", f.read(),
+                file_name="example.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="Download an example Excel file to see the required format."
             )
         if file is not None:
-            original_df = pd.read_csv(file)
+            original_df = pd.read_excel(file, engine='openpyxl')
             if "SMILES" in original_df.columns:
                 smiles_list = original_df["SMILES"].dropna().tolist()
 
@@ -345,8 +347,15 @@ def main():
                 res_df = original_df.merge(res_df, on="SMILES", how="left")
             st.subheader("All Predictions")
             st.dataframe(res_df)
-            st.download_button("Download Results", res_df.to_csv(index=False).encode('utf-8'),
-                               "all_predictions.csv", "text/csv")
+            # 将结果写入 xlsx 避免 CSV 中文乱码
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                res_df.to_excel(writer, index=False, sheet_name='Predictions')
+            output.seek(0)
+            st.download_button(
+                "Download Results", output,
+                "all_predictions.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 if __name__ == "__main__":
