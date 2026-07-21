@@ -1,5 +1,5 @@
 import streamlit as st
-st.set_page_config(page_title="NURA Activity Predictor", layout="wide")
+st.set_page_config(page_title="Endo-Screen | EDCs Virtual Screening", layout="wide")
 
 import os, json, warnings, numpy as np, pandas as pd, torch
 from io import BytesIO
@@ -51,7 +51,33 @@ CONSENSUS_CONFIGS = {
     ('TPO', 'binder'): ('none', 'none'),
     ('DIO1', 'binder'): ('rus', 'ros'),
     ('DIO2', 'binder'): ('none', 'none'),
-    ('DIO3', 'binder'): ('none', 'none')
+    ('DIO3', 'binder'): ('none', 'none'),
+    ('CYP19', 'binder'): ('none', 'none'),
+    ('5AR1', 'binder'): ('none', 'none'),
+    ('5AR2', 'binder'): ('none', 'none')
+}
+
+TARGET_FULL_NAMES = {
+    '5AR1': '5α-Reductase 1',
+    '5AR2': '5α-Reductase 2',
+    'AR': 'Androgen Receptor',
+    'CYP19': 'Aromatase',
+    'DIO1': 'Type I Iodothyronine Deiodinase',
+    'DIO2': 'Type II Iodothyronine Deiodinase',
+    'DIO3': 'Type III Iodothyronine Deiodinase',
+    'ERA': 'Estrogen Receptor Alpha',
+    'ERB': 'Estrogen Receptor Beta',
+    'FXR': 'Farnesoid X Receptor',
+    'GR': 'Glucocorticoid Receptor',
+    'NIS': 'Sodium-Iodide Symporter',
+    'PPARD': 'PPAR Delta',
+    'PPARG': 'PPAR Gamma',
+    'PR': 'Progesterone Receptor',
+    'PXR': 'Pregnane X Receptor',
+    'RXR': 'Retinoid X Receptor',
+    'TPO': 'Thyroid Peroxidase',
+    'TR': 'Thyroid Hormone Receptor',
+    'TSHR': 'Thyroid-Stimulating Hormone Receptor',
 }
 
 AD_CACHE = {}
@@ -225,28 +251,30 @@ def run_ad(smiles_list, receptor, mode):
 
 # ── Streamlit UI ──
 def main():
-    st.title("Nuclear Receptor Activity Prediction Platform")
+    st.markdown("<h1 style='text-align: center;'>内分泌干扰物（EDCs）虚拟筛选平台</h1>", unsafe_allow_html=True)
     st.image("Schematic diagram.png", caption="Schematic Diagram", use_column_width=True)
 
     ALL_TASKS = sorted(CONSENSUS_CONFIGS.keys())
 
     st.sidebar.header("Target Configuration")
     all_targets = sorted(set(k[0] for k in ALL_TASKS))
-    selected_target = st.sidebar.selectbox("Select Receptor", all_targets)
+    target_display = {f"{t}—{TARGET_FULL_NAMES.get(t, '')}": t for t in all_targets}
+    selected_display = st.sidebar.selectbox("Select Receptor", list(target_display.keys()))
+    selected_target = target_display[selected_display]
     available_modes = sorted(set(k[1] for k in ALL_TASKS if k[0] == selected_target))
     selected_mode = st.sidebar.selectbox("Select Mode", available_modes)
 
     # ── Tutorial ──
     with st.sidebar.expander("📖 Tutorial"):
-        st.markdown("""欢迎来到核受体活性预测平台！
+        st.markdown("""欢迎来到内分泌干扰物虚拟筛选平台！
 
 **1. 平台概述**
 
-该平台预测小分子在不同效应（结合剂、激动剂、拮抗剂）下对各种靶标的活性。
+该平台预测小分子在不同效应（结合剂、激动剂、拮抗剂）下对内分泌系统关键靶标的活性，涵盖核受体、甲状腺激素代谢酶、类固醇合成酶及转运体，适用于内分泌干扰物（EDCs）的虚拟筛选与风险评估。
 
 **2. 使用说明**
 
-**第一步：选择你的靶标。** 先选择你想要预测的核受体，然后选择效应类型：结合剂、激动剂或拮抗剂。
+**第一步：选择你的靶标。** 先选择你想要预测的内分泌靶标，然后选择效应类型：结合剂、激动剂或拮抗剂。
 
 **第二步：输入你的分子。** 有三种输入可供选择，选择一种输入方法：
 - **Draw Molecule：** 使用化学结构编辑器绘制分子，绘制结束后需点击Apply，编辑器下方会显示SMILES。
