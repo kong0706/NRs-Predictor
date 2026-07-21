@@ -1,0 +1,54 @@
+{
+    "binder_none_GT": {
+        "hidden_channels": 128,
+        "num_layers": 2,
+        "dropout": 0.5,
+        "lr": 0.0001,
+        "weight_decay": 0.001,
+        "gamma": 0.995,
+        "pos_weight": 1.0359232280059156,
+        "batch_size": 64,
+        "n_heads": 4
+    },
+    "binder_none_GIN": {
+        "hidden_channels": 16,
+        "num_layers": 4,
+        "dropout": 0.2,
+        "lr": 0.001,
+        "weight_decay": 0.001,
+        "gamma": 0.995,
+        "pos_weight": 1.0303544540712324,
+        "batch_size": 32
+    },
+    "binder_none_GCN": {
+        "hidden_channels": 32,
+        "num_layers": 1,
+        "dropout": 0.2,
+        "lr": 0.001,
+        "weight_decay": 0.0001,
+        "gamma": 0.995,
+        "pos_weight": 1.0294817215542587,
+        "batch_size": 64
+    },
+    "binder_none_GAT": {
+        "hidden_channels": 128,
+        "num_layers": 2,
+        "dropout": 0.5,
+        "lr": 0.001,
+        "weight_decay": 0.001,
+        "gamma": 0.995,
+        "pos_weight": 1.0228743721052633,
+        "batch_size": 32
+    },
+    "binder_none_AFP": {
+        "hidden_channels": 32,
+        "num_layers": 3,
+        "dropout": 0.5,
+        "lr": 0.01,
+        "weight_decay": 0.0001,
+        "gamma": 0.9,
+        "pos_weight": 1.218889536782277,
+        "batch_size": 32,
+        "num_timesteps": 4
+    }
+}
