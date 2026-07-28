@@ -212,15 +212,33 @@ def smiles_to_fp(smiles_list, nBits=2048):
     return np.array(fps), valid
 
 
-def calculate_ad(test_fps, train_fps, threshold, k=5):
-    inter = test_fps @ train_fps.T
-    union = test_fps.sum(1)[:, None] + train_fps.sum(1)[None, :] - inter
-    sims = np.nan_to_num(inter / union, nan=0.0)
+def calculate_ad(test_fps, train_fps, threshold, k=5, chunk_size=100):
+    # 预计算训练集：float32 节省内存，train_sum 只算一次
+    train_fps_f = train_fps.astype(np.float32)
+    train_sum = train_fps_f.sum(1)  # (n_train,)
+
     results = {}
-    for i in range(test_fps.shape[0]):
-        row = sims[i]
-        top_k = np.partition(row, -k)[-k:] if len(row) >= k else row
-        results[i] = 'Inside AD' if top_k.mean() >= threshold else 'Outside AD'
+    n_test = test_fps.shape[0]
+
+    for chunk_start in range(0, n_test, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, n_test)
+        chunk = test_fps[chunk_start:chunk_end].astype(np.float32)
+
+        # inter / union 形状均为 (chunk_size, n_train)，远小于原始 (n_test, n_train)
+        inter = chunk @ train_fps_f.T
+        union = chunk.sum(1)[:, None] + train_sum[None, :] - inter
+        sims = np.nan_to_num(inter / union, nan=0.0)
+        del inter, union
+
+        for i_local in range(chunk.shape[0]):
+            global_idx = chunk_start + i_local
+            row = sims[i_local]
+            top_k = np.partition(row, -k)[-k:] if len(row) >= k else row
+            results[global_idx] = 'Inside AD' if top_k.mean() >= threshold else 'Outside AD'
+
+        del chunk, sims
+        gc.collect()
+
     return results
 
 
