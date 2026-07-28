@@ -237,7 +237,6 @@ def calculate_ad(test_fps, train_fps, threshold, k=5, chunk_size=100):
             results[global_idx] = 'Inside AD' if top_k.mean() >= threshold else 'Outside AD'
 
         del chunk, sims
-        gc.collect()
 
     return results
 
