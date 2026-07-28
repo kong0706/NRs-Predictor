@@ -254,6 +254,12 @@ def main():
     st.markdown("<h1 style='text-align: center;'>内分泌干扰物（EDCs）虚拟筛选平台</h1>", unsafe_allow_html=True)
     st.image("Schematic diagram.png", caption="Schematic Diagram", use_column_width=True)
 
+    # 初始化 session_state，用于在页面刷新后保留结果
+    if "single_results" not in st.session_state:
+        st.session_state.single_results = None
+    if "all_results" not in st.session_state:
+        st.session_state.all_results = None
+
     ALL_TASKS = sorted(CONSENSUS_CONFIGS.keys())
 
     st.sidebar.header("Target Configuration")
@@ -331,20 +337,34 @@ def main():
             preds, probs = run_prediction(selected_target, selected_mode, smiles_list)
             ad_results = run_ad(smiles_list, selected_target, selected_mode)
             if preds is not None:
-                st.subheader("Results Table")
                 res_df = pd.DataFrame({
                     "SMILES": smiles_list,
                     "Probability": [f"{p:.4f}" for p in probs],
                     "Outcome": ["Active" if p == 1 else "Inactive" for p in preds],
                     "Applicability Domain": ad_results,
                 })
-                # 如果上传了 CSV，保留原始列
+
                 if original_df is not None:
                     res_df = original_df.merge(res_df, on="SMILES", how="left")
-                st.dataframe(res_df)
-                if len(smiles_list) == 1:
-                    mol = Chem.MolFromSmiles(smiles_list[0])
-                    if mol: st.image(Draw.MolToImage(mol, size=(300, 300)))
+
+                st.session_state.single_results = res_df
+
+
+    if st.session_state.single_results is not None:
+        st.subheader("Results Table")
+        st.dataframe(st.session_state.single_results)
+        if len(smiles_list) == 1:
+            mol = Chem.MolFromSmiles(smiles_list[0])
+            if mol: st.image(Draw.MolToImage(mol, size=(300, 300)))
+
+        output_single = BytesIO()
+        with pd.ExcelWriter(output_single, engine='openpyxl') as writer:
+            st.session_state.single_results.to_excel(writer, index=False, sheet_name='Predictions')
+        output_single.seek(0)
+        st.download_button(
+            "Download Single Result", output_single,
+            f"{selected_target}_{selected_mode}_prediction.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # Run all
     if start_all and smiles_list:
@@ -370,20 +390,22 @@ def main():
                 progress.progress((i + 1) / len(ALL_TASKS))
 
             res_df = pd.DataFrame(all_results)
-            # 如果上传了 CSV，保留原始列
+
             if original_df is not None:
                 res_df = original_df.merge(res_df, on="SMILES", how="left")
-            st.subheader("All Predictions")
-            st.dataframe(res_df)
-            # 将结果写入 xlsx 避免 CSV 中文乱码
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                res_df.to_excel(writer, index=False, sheet_name='Predictions')
-            output.seek(0)
-            st.download_button(
-                "Download Results", output,
-                "all_predictions.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.session_state.all_results = res_df
+
+    if st.session_state.all_results is not None:
+        st.subheader("All Predictions")
+        st.dataframe(st.session_state.all_results)
+        output_all = BytesIO()
+        with pd.ExcelWriter(output_all, engine='openpyxl') as writer:
+            st.session_state.all_results.to_excel(writer, index=False, sheet_name='Predictions')
+        output_all.seek(0)
+        st.download_button(
+            "Download Results", output_all,
+            "all_predictions.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 if __name__ == "__main__":
