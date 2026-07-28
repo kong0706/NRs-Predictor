@@ -1,7 +1,7 @@
 import streamlit as st
 st.set_page_config(page_title="Endo-Screen | EDCs Virtual Screening", layout="wide")
 
-import os, json, warnings, gc, traceback, numpy as np, pandas as pd, torch
+import os, json, warnings, numpy as np, pandas as pd, torch
 from io import BytesIO
 from joblib import load
 from rdkit import Chem
@@ -125,7 +125,6 @@ def calc_features(smiles_list, tag):
         return np.array([fz.featurize(s)[0].tolist() for s in smiles_list])
 
 
-@st.cache_resource
 def load_gnn_model(model_name, target, mode, gnn_sampling, rep):
     params = json.load(open(os.path.join(HYPERPARAMS_DIR, f'{target}_best_hyperparameters.json')))
     p = params[f'{mode}_{gnn_sampling}_{model_name}']
@@ -138,12 +137,6 @@ def load_gnn_model(model_name, target, mode, gnn_sampling, rep):
     m = cls(**kw)
     m.load_state_dict(torch.load(pth, map_location=device)); m.to(device); m.eval()
     return m
-
-
-@st.cache_resource
-def load_ml_model(path):
-    """缓存 joblib 模型加载，避免重复从磁盘读取"""
-    return load(path)
 
 
 def run_prediction(target, mode, smiles_list):
@@ -176,7 +169,7 @@ def run_prediction(target, mode, smiles_list):
         for name, ft in ml_ens:
             mp = os.path.join(ML_BASE, target, mode, ml_s, 'final_models', f'Replicate_{rep}', f'{name}_{ft}.joblib')
             if os.path.exists(mp) and ft in ft_cache:
-                all_probs.append(load_ml_model(mp).predict_proba(ft_cache[ft])[:, 1])
+                all_probs.append(load(mp).predict_proba(ft_cache[ft])[:, 1])
 
         for name in gnn_models:
             try:
@@ -189,7 +182,7 @@ def run_prediction(target, mode, smiles_list):
             except Exception: continue
 
         if not all_probs: continue
-        rep_probs.append(load_ml_model(meta_path).predict_proba(np.column_stack(all_probs))[:, 1])
+        rep_probs.append(load(meta_path).predict_proba(np.column_stack(all_probs))[:, 1])
 
     if not rep_probs:
         st.error(f"No valid replicates for {target}-{mode}"); return None, None
@@ -350,20 +343,20 @@ def main():
                     "Outcome": ["Active" if p == 1 else "Inactive" for p in preds],
                     "Applicability Domain": ad_results,
                 })
-                # 如果上传了 CSV，保留原始列
+
                 if original_df is not None:
                     res_df = original_df.merge(res_df, on="SMILES", how="left")
-                # 存入 session_state，刷新页面后依然保留
+
                 st.session_state.single_results = res_df
 
-    # 显示单任务结果（从 session_state 读取，点击下载按钮后不会消失）
+
     if st.session_state.single_results is not None:
         st.subheader("Results Table")
         st.dataframe(st.session_state.single_results)
         if len(smiles_list) == 1:
             mol = Chem.MolFromSmiles(smiles_list[0])
             if mol: st.image(Draw.MolToImage(mol, size=(300, 300)))
-        # 下载按钮移到条件块外部
+
         output_single = BytesIO()
         with pd.ExcelWriter(output_single, engine='openpyxl') as writer:
             st.session_state.single_results.to_excel(writer, index=False, sheet_name='Predictions')
@@ -375,20 +368,15 @@ def main():
 
     # Run all
     if start_all and smiles_list:
-        total_tasks = len(ALL_TASKS)
-        # 使用 status 容器保持 WebSocket 活跃，显示当前任务
-        status_container = st.empty()
-        progress = st.progress(0, text=f"0/{total_tasks} tasks completed")
-        all_results = []
-        failed_tasks = []
-
-        for i, (target, mode) in enumerate(ALL_TASKS):
-            task_label = f"{target}—{mode}"
-            status_container.info(f"🔬 Processing **{task_label}**  ({i+1}/{total_tasks})")
-            try:
-                preds, probs = run_prediction(target, mode, smiles_list)
-                ad_results = run_ad(smiles_list, target, mode)
-                if preds is not None:
+        st.warning("Running all targets may take several minutes.")
+        with st.spinner("Running all targets..."):
+            all_results = []
+            progress = st.progress(0)
+            for i, (target, mode) in enumerate(ALL_TASKS):
+                try:
+                    preds, probs = run_prediction(target, mode, smiles_list)
+                    ad_results = run_ad(smiles_list, target, mode)
+                    if preds is None: continue
                     for j, smi in enumerate(smiles_list):
                         all_results.append({
                             "SMILES": smi, "Target": target, "Mode": mode,
@@ -396,45 +384,17 @@ def main():
                             "Outcome": "Active" if preds[j] == 1 else "Inactive",
                             "Applicability Domain": ad_results[j],
                         })
-                else:
-                    failed_tasks.append(f"{task_label} (no predictions returned)")
-            except Exception as e:
-                failed_tasks.append(f"{task_label}: {e}")
-                st.warning(f"⚠️ {task_label} failed: {e}")
-                # 打印完整 traceback 到 console 方便云端调试
-                print(f"[ERROR] {task_label}: {traceback.format_exc()}")
+                    if torch.cuda.is_available(): torch.cuda.empty_cache()
+                except Exception as e:
+                    st.warning(f"{target}-{mode} failed: {e}")
+                progress.progress((i + 1) / len(ALL_TASKS))
 
-            # 每完成一个任务就保存中间结果到 session_state，防止中途崩溃丢失所有数据
-            if all_results:
-                partial_df = pd.DataFrame(all_results)
-                if original_df is not None:
-                    partial_df = original_df.merge(partial_df, on="SMILES", how="left")
-                st.session_state.all_results = partial_df
-
-            # 主动释放内存
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            progress.progress((i + 1) / total_tasks, text=f"{i+1}/{total_tasks} tasks completed")
-
-        status_container.empty()  # 清除状态信息
-
-        if failed_tasks:
-            with st.expander(f"⚠️ {len(failed_tasks)} task(s) failed (click to expand)"):
-                for ft in failed_tasks:
-                    st.write(ft)
-
-        if all_results:
             res_df = pd.DataFrame(all_results)
+
             if original_df is not None:
                 res_df = original_df.merge(res_df, on="SMILES", how="left")
             st.session_state.all_results = res_df
-            st.success(f"✅ Successfully completed: {total_tasks - len(failed_tasks)}/{total_tasks} tasks")
-        else:
-            st.error("❌ All tasks failed. Please check the input and try again.")
 
-    # 显示全部结果（从 session_state 读取，点击下载按钮后不会消失）
     if st.session_state.all_results is not None:
         st.subheader("All Predictions")
         st.dataframe(st.session_state.all_results)
